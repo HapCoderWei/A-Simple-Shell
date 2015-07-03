@@ -6,72 +6,76 @@
 #include <fcntl.h>
 #include <stdlib.h>
 
-#define MAX_STR 30
-#define MAX_PARA 5
+#define MAX_STR 512
+#define MAX_PARA 50
 int main()
 {
     pid_t p1,p2;
     char buf[MAX_STR],bufile[MAX_STR], *ps_argv[MAX_PARA],*argv1[MAX_PARA],*argv2[MAX_PARA];
     int i,n,fd[2],save_fd, wt;
 
-    while(1)
+    while(1)                    /* Main Circle */
     {
-	    write(STDOUT_FILENO,"myshell> ",9);
-	    memset(buf,0,MAX_STR);
-	    n = read(STDIN_FILENO, buf, MAX_STR-1);
-	    buf[strlen(buf)-1]='\0';
-	    if (n < 0) {
+	    write(STDOUT_FILENO,"myshell> ",9); /* Display the shell prompt "myshell>" */
+	    memset(buf,0,MAX_STR);              /* Empty buffer */
+	    n = read(STDIN_FILENO, buf, MAX_STR-1); /* read input from stdin to buffer */
+	    buf[strlen(buf)]='\0';                  /* Add null terminate */
+	    if (n < 0) {                            /* Read error handle */
             perror("read error");
             _exit(1);
 	    }
-	    else if (n == 1) continue;    //n=1表示输入只有换行键
+	    else if (n == 1) continue; /* n = 1 is only input '\n'*/
 
 	    /******************************************************/
-	    if ( !(strncmp(buf, "quit", 4))) {
+	    if ( !(strncmp(buf, "quit", 4))) { /* quit to exit */
             write(STDOUT_FILENO,"bye-bye!\n",9);
             break;
 	    }
 
 	    /******************************************************/
-	    p1 = fork();   //通过fork()创建一个子进程,用来执行用户输入的命令
-	    if (p1 < 0) {
+	    p1 = fork();            /* Fork a child process to run user's command */
+	    if (p1 < 0) {           /* If fork error, exit */
             perror(" fork error");
             _exit(1);
 	    }
 
-	    //在子进程中执行下列代码，父进程进入睡眠状态pipe
+	    /* Child Process to run command */
 	    if (p1 == 0) {
-            //以管道符为界提取命令，放在ps_argv[]数组中
+            /* Check if have a pipe operator */
             ps_argv[0] = strtok(buf, "|");
 
-            //maybe there has a problem in strtok
+            /* Note: if buff has no pipe operator, */
+            /* this for expression won't be execute */
             for(i=1; (ps_argv[i]=strtok(NULL,"|")); i++);
 
-            if (pipe(fd)<0)
+            if (pipe(fd)<0)     /* Create a pipe */
 		    {
                 perror("pipe");
                 _exit(1);
 		    }
 
-            //调用fork()创建子进程，进行管道通信
-            if ( (p2=fork()) <0)
-		    {
+            /* Create a child process and communicate */
+            /* by pipe*/
+            if ( (p2=fork()) <0){
                 perror("fork 2");
                 _exit(1);
 		    }
 
-            if (p2 > 0) //parent
+            if (p2 > 0)         /* in the parent process */
 		    {
-                //save STDOUT_FILENO into save_fd
+                /* save STDOUT_FILENO into save_fd, in order to recovery stdout */
+                /* int dup(int oldfd), copy the oldfd to a min unused descriptor */
                 save_fd = dup(STDOUT_FILENO);
 
-                //将STDOUT_FILENO重定向到fd[1]，即管道的写入端
+                /* copy fd[1] to stdout, now you write to stdout, \
+                   it write to fd[1] actually */
                 dup2(fd[1],STDOUT_FILENO);
-                //父进程先关闭读取端
+                /* parent should close the read pipe fd[0] */
                 close(fd[0]);
+                /* And we have the stdout as fd[1], now the fd[1] can be closed. */
                 close(fd[1]);
 
-                //查看命令中是否有输入重定向符号 '<'
+                /* Check if have input redirect '<' */
                 if(strchr(ps_argv[0],(int)'<'))
 			    {
                     /*如果命令包含输入重定向，
@@ -92,68 +96,72 @@ int main()
                     for(i=2; (argv1[i]=strtok(NULL," "));i++);
                     argv1[i-1]=NULL;
 			    }
-                else //如果命令不包含输入重定向，则只需执行命令及其参数
-			    {
-                    //提取命令
+                else {   /* Don't have a redirect, just run command */
+                    /* Get command */
                     argv1[0] = strtok(ps_argv[0]," ");
 
-                    //提取命令的每个参数
+                    /* Get every parameters */
                     for(i=1; (argv1[i]=strtok(NULL," ")); i++);
 			    }
 
-                //将每个参数传给命令并执行
-                execvp(argv1[0],argv1);
+                /* Call the execvp functin and run the command */
+                if(execvp(argv1[0],argv1) < 0) {
+                    perror("unaviable command");
+                }
 
-                perror("unaviable command");
-
-                //将STDOUT_FILENO重新定向到标准输出即屏幕
+                /* Redirect the stdout to display */
                 dup2(save_fd,STDOUT_FILENO);
 		    }
-            else { //child
-
+            else {              /* in the child process */
                 char buff[1400]={0};
                 int nn;
 
-                //将STDIN_FILENO重定向到fd[0]，即管道的读出端
-                dup2(fd[0],STDIN_FILENO);
-                //子进程关闭写入端
-                close(fd[1]);
-                close(fd[0]);
-                //子进程执行管道的第二个命令，此命令保存在ps_argv[1]中
-                if(ps_argv[1])
-                {
-                    //检测这个命令中有输出重定向文件要求
-                    if(strchr(ps_argv[1],(int)'>'))
-                    {
-                        //分别提取命令部分和输出文件名
+                dup2(fd[0],STDIN_FILENO); /* Redirect stdio to fd[0]. */
+                close(fd[1]);  /* Child should close the read pipe. */
+                close(fd[0]);  /* Now we have the stdio, so close the fd[0]. */
+
+
+                /* Child process run the second command after pipe operator */
+                /* This command be saved in the ps_argv[1] */
+                if(ps_argv[1]) { /* If user's input have pipe operator, \
+                                    the ps_argv[1] saves the second parameters */
+                    /* Check if this command request to redirect to a file */
+                    if(strchr(ps_argv[1],(int)'>')) { /* Request to redirect */
+                        /* Get the command and file name respectively */
+                        /* argv2[0] is command and paramepters. */
+                        /* argv2[1] is redirected files name */
                         argv2[0] = strtok(ps_argv[1]," > ");
                         for(i=1; (argv2[i]=strtok(NULL," > ")); i++);
 
                         int temp=open(argv2[1],O_WRONLY|O_CREAT,S_IRUSR|S_IWUSR);
-                        if(temp < 0)
-                        perror("open argv2[1]");
-                        //将输出重定向到目标文件
+                        if(temp < 0) {
+                            perror("open argv2[1]");
+                        }
+                        /* Redirect the output to target file */
                         dup2(temp, STDOUT_FILENO);
-
+                        /* Copy the argv2[0] to the ps_argv[1] which will be run as command. */
                         ps_argv[1]=argv2[0];
                     }
 
-                    //分别提取这个命令和参数，argv2[0]为命令，argv2[1+]为执行参数
+                    /* However ps_argv[1] is the command, get the command and parameters */
+                    /* After this, the argv2[0] is the command, and argv2[1+] is parameters. */
                     argv2[0] = strtok(ps_argv[1], " ");
                     for(i=1; (argv2[i]=strtok(NULL, " "));i++);
 
-
+                    /* This is for support the alias "clr" */
                     if(argv2[0]=="clr") argv2[0]="clean";
+                    /* Execute the command with parameters. */
                     execvp(argv2[0],argv2);
                 }
-                else
-                nn=read(STDIN_FILENO,buff,1400);
-                write(STDOUT_FILENO,buff,nn);
+                else {
+                    nn=read(STDIN_FILENO,buff,1400);
+                    write(STDOUT_FILENO,buff,nn);
+                }
             }
             break;
 	    }
-        else {  //父进程进入睡眠态，睡眠1s，等待子进程返回
-            wait(&wt);
+        else {                  /* Our prompt process go to sleep to wait  */
+            wait(&wt);          /* child process return. */
         }
     }
     return 0;
